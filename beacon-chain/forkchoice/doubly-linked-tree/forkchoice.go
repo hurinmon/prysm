@@ -55,7 +55,6 @@ func (f *ForkChoice) NodeCount() int {
 // It firsts computes validator's balance changes then recalculates block tree from leaves to root.
 func (f *ForkChoice) Head(
 	ctx context.Context,
-	justifiedStateBalances []uint64,
 ) ([32]byte, error) {
 	ctx, span := trace.StartSpan(ctx, "doublyLinkedForkchoice.Head")
 	defer span.End()
@@ -69,11 +68,11 @@ func (f *ForkChoice) Head(
 	f.store.nodesLock.Lock()
 	defer f.store.nodesLock.Unlock()
 
-	if err := f.updateBalances(justifiedStateBalances); err != nil {
+	if err := f.updateBalances(); err != nil {
 		return [32]byte{}, errors.Wrap(err, "could not update balances")
 	}
 
-	if err := f.store.applyProposerBoostScore(justifiedStateBalances); err != nil {
+	if err := f.applyProposerBoostScore(); err != nil {
 		return [32]byte{}, errors.Wrap(err, "could not apply proposer boost score")
 	}
 
@@ -171,8 +170,12 @@ func (f *ForkChoice) updateCheckpoints(ctx context.Context, jc, fc *ethpb.Checkp
 		currentSlot := slots.CurrentSlot(f.store.genesisTime)
 		if slots.SinceEpochStarts(currentSlot) < params.BeaconConfig().SafeSlotsToUpdateJustified {
 			f.store.prevJustifiedCheckpoint = f.store.justifiedCheckpoint
+			root := bytesutil.ToBytes32(jc.Root)
 			f.store.justifiedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: jc.Epoch,
-				Root: bytesutil.ToBytes32(jc.Root)}
+				Root: root}
+			if err := f.updateJustifiedBalances(ctx, root); err != nil {
+				return errors.Wrap(err, "could not update justified balances")
+			}
 		} else {
 			currentJcp := f.store.justifiedCheckpoint
 			currentRoot := currentJcp.Root
@@ -198,6 +201,9 @@ func (f *ForkChoice) updateCheckpoints(ctx context.Context, jc, fc *ethpb.Checkp
 				f.store.prevJustifiedCheckpoint = f.store.justifiedCheckpoint
 				f.store.justifiedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: jc.Epoch,
 					Root: jcRoot}
+				if err := f.updateJustifiedBalances(ctx, jcRoot); err != nil {
+					return errors.Wrap(err, "could not update justified balances")
+				}
 			}
 		}
 	}
@@ -208,8 +214,12 @@ func (f *ForkChoice) updateCheckpoints(ctx context.Context, jc, fc *ethpb.Checkp
 	}
 	f.store.finalizedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: fc.Epoch,
 		Root: bytesutil.ToBytes32(fc.Root)}
+	root := bytesutil.ToBytes32(jc.Root)
 	f.store.justifiedCheckpoint = &forkchoicetypes.Checkpoint{Epoch: jc.Epoch,
-		Root: bytesutil.ToBytes32(jc.Root)}
+		Root: root}
+	if err := f.updateJustifiedBalances(ctx, root); err != nil {
+		return errors.Wrap(err, "could not update justified balances")
+	}
 	f.store.checkpointsLock.Unlock()
 	return f.store.prune(ctx)
 }
@@ -304,7 +314,12 @@ func (f *ForkChoice) AncestorRoot(ctx context.Context, root [32]byte, slot primi
 // updateBalances updates the balances that directly voted for each block taking into account the
 // validators' latest votes. This function requires a lock in Store.nodesLock
 // and votesLock
-func (f *ForkChoice) updateBalances(newBalances []uint64) error {
+func (f *ForkChoice) updateBalances() error {
+	// lock checkpoints for the justified balances
+	f.store.checkpointsLock.RLock()
+	defer f.store.checkpointsLock.RUnlock()
+	newBalances := f.justifiedBalances
+
 	for index, vote := range f.votes {
 		// Skip if validator has been slashed
 		if f.store.slashedIndices[primitives.ValidatorIndex(index)] {
@@ -679,4 +694,19 @@ func (f *ForkChoice) Weight(root [32]byte) (uint64, error) {
 		return 0, ErrNilNode
 	}
 	return n.weight, nil
+}
+
+// updateJustifiedBalances updates the validators balances on the justified checkpoint pointed by root
+func (f *ForkChoice) updateJustifiedBalances(ctx context.Context, root [32]byte) error {
+	balances, err := f.balancesByRoot(ctx, root)
+	if err != nil {
+		return errors.Wrap(err, "could not get justified balances")
+	}
+	f.justifiedBalances = balances
+	return nil
+}
+
+// SetJustifiedBalances is used only in tests
+func (f *ForkChoice) SetJustifiedBalances(bals []uint64) {
+	f.justifiedBalances = bals
 }

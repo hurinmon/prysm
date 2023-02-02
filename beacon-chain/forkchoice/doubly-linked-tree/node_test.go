@@ -284,8 +284,8 @@ func TestStore_VotedFraction(t *testing.T) {
 	require.Equal(t, uint64(0), vote)
 
 	// Attestations are not counted until we process Head
-	balances := []uint64{params.BeaconConfig().MaxEffectiveBalance, params.BeaconConfig().MaxEffectiveBalance}
-	_, err = f.Head(context.Background(), balances)
+	f.justifiedBalances = []uint64{params.BeaconConfig().MaxEffectiveBalance, params.BeaconConfig().MaxEffectiveBalance}
+	_, err = f.Head(context.Background())
 	require.NoError(t, err)
 	f.ProcessAttestation(context.Background(), []uint64{0, 1}, [32]byte{'b'}, 2)
 	vote, err = f.VotedFraction([32]byte{'b'})
@@ -293,7 +293,7 @@ func TestStore_VotedFraction(t *testing.T) {
 	require.Equal(t, uint64(0), vote)
 
 	// After we call head the voted fraction is obtained.
-	_, err = f.Head(context.Background(), balances)
+	_, err = f.Head(context.Background())
 	require.NoError(t, err)
 	vote, err = f.VotedFraction([32]byte{'b'})
 	require.NoError(t, err)
