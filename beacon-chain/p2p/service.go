@@ -206,7 +206,7 @@ func (s *Service) Start() {
 			return
 		}
 		s.dv5Listener = listener
-		go s.listenForNewNodes()
+		//go s.listenForNewNodes()
 	}
 
 	s.started = true
